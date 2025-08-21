@@ -80,8 +80,15 @@ export default function DonatePage() {
         to: recipient as `0x${string}`,
         value,
       });
-    } catch (e: any) {
-      setError(e?.shortMessage || e?.message || "Error sending");
+    } catch (e: unknown) {
+      const message =
+        e && typeof e === "object" && "shortMessage" in e
+          ? (e as { shortMessage: string }).shortMessage
+          : e && typeof e === "object" && "message" in e
+            ? (e as { message: string }).message
+            : "Error sending";
+      console.log(e);
+      setError(message);
     }
   }
 
