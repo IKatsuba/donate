@@ -1,103 +1,197 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import { useEffect, useMemo, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  useAccount,
+  useChainId,
+  useChains,
+  useSwitchChain,
+  useSendTransaction,
+  useConnect,
+  useDisconnect,
+} from "wagmi";
+import { parseEther, isAddress } from "viem";
+import { sepolia } from "wagmi/chains";
+
+export default function DonatePage() {
+  const { address, isConnected } = useAccount();
+  const { connect, connectors } = useConnect();
+  const { disconnect } = useDisconnect();
+  const chainId = useChainId();
+  const chains = useChains();
+  const { switchChain, isPending: isSwitching } = useSwitchChain();
+  const {
+    sendTransactionAsync,
+    data: txHash,
+    isPending: isSending,
+  } = useSendTransaction();
+
+  const [amount, setAmount] = useState("0.01");
+  const [recipient, setRecipient] = useState(
+    "0xbb61FFEF3c1855D40c5868669ac0ECeB47E4eF56",
+  );
+  const [selectedChainId, setSelectedChainId] = useState<number>(sepolia.id);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!chains?.length) return;
+    if (!chains.find((c) => c.id === selectedChainId)) {
+      setSelectedChainId(chains[0].id);
+    }
+  }, [chains, selectedChainId]);
+
+  const isOnSelectedChain = useMemo(
+    () => chainId === selectedChainId,
+    [chainId, selectedChainId],
+  );
+
+  const txExplorerUrl = useMemo(() => {
+    if (!txHash) return null;
+    return `${sepolia.blockExplorers.default.url}/tx/${txHash}`;
+  }, [txHash]);
+
+  async function handleSend() {
+    setError(null);
+    if (!isConnected) {
+      setError("Connect wallet");
+      return;
+    }
+    if (!recipient || !isAddress(recipient)) {
+      setError("Enter valid recipient address");
+      return;
+    }
+    try {
+      if (!isOnSelectedChain) {
+        await switchChain({ chainId: selectedChainId });
+      }
+      const value = parseEther(amount as `${number}`);
+      await sendTransactionAsync({
+        chainId: selectedChainId,
+        to: recipient as `0x${string}`,
+        value,
+      });
+    } catch (e: any) {
+      setError(e?.shortMessage || e?.message || "Error sending");
+    }
+  }
+
   return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+    <div className="mx-auto max-w-xl p-6">
+      <Card>
+        <CardHeader>
+          <CardTitle>Donate</CardTitle>
+          <CardDescription>
+            Send test ETH to the specified address in the selected network.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center gap-3">
+            <div className="flex-1 text-sm">
+              <div className="font-medium">
+                {isConnected ? "Connected:" : "Connect Wallet"}
+              </div>
+              <div className="text-muted-foreground break-all">
+                {address || ""}
+              </div>
+            </div>
+            {isConnected ? (
+              <Button variant="secondary" onClick={() => disconnect()}>
+                Disconnect Wallet
+              </Button>
+            ) : (
+              <>
+                {connectors.map((connector) => (
+                  <Button
+                    key={connector.id}
+                    onClick={() =>
+                      connect({ connector, chainId: selectedChainId })
+                    }
+                  >
+                    {connector.icon && (
+                      <img
+                        src={connector.icon}
+                        alt={connector.name}
+                        className="w-4 h-4"
+                      />
+                    )}
+                    {connector.name}
+                  </Button>
+                ))}
+              </>
+            )}
+          </div>
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="network">Network</Label>
+              <div className="flex items-center gap-2">
+                <div className="text-sm text-muted-foreground">
+                  {sepolia.name}
+                </div>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="amount">Amount (ETH)</Label>
+              <Input
+                id="amount"
+                inputMode="decimal"
+                placeholder="0.01"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="recipient">Recipient address</Label>
+            <Input
+              id="recipient"
+              placeholder="0x... (your address)"
+              value={recipient}
+              readOnly
+              onChange={(e) => setRecipient(e.target.value.trim())}
             />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
-        </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+          </div>
+
+          {error && (
+            <div className="rounded-md border border-destructive bg-destructive/10 p-2 text-sm text-destructive">
+              {error}
+            </div>
+          )}
+
+          {txHash && (
+            <div className="rounded-md border border-green-600/40 bg-green-600/10 p-2 text-sm break-all">
+              <div>Hash: {txHash}</div>
+              {txExplorerUrl && (
+                <a
+                  className="text-primary underline"
+                  href={txExplorerUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Open in explorer
+                </a>
+              )}
+            </div>
+          )}
+
+          <div className="flex justify-end">
+            <Button onClick={handleSend} disabled={isSending || isSwitching}>
+              {isSending ? "Sending..." : "Send donation"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }
