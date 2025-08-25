@@ -181,6 +181,21 @@ export default function SwapPage() {
     query: { enabled: Boolean(toTokenAddress && amountInEth) },
   });
 
+  const formattedQuote = useMemo(() => {
+    try {
+      if (!quote) return null;
+      const amountOutRaw = Array.isArray(quote)
+        ? (quote[0] as unknown as bigint)
+        : (quote as unknown as bigint);
+      const dec = Number(toTokenDecimals || 18);
+      const num = Number(formatUnits(amountOutRaw, dec));
+      if (!Number.isFinite(num)) return null;
+      return num;
+    } catch {
+      return null;
+    }
+  }, [quote, toTokenDecimals]);
+
   const txExplorerBase = sepolia.blockExplorers.default.url;
 
   async function ensureSepolia() {
@@ -325,9 +340,13 @@ export default function SwapPage() {
             </div>
           </div>
 
-          {quote && (
+          {formattedQuote !== null && (
             <div className="rounded-md border bg-muted/30 p-3 text-sm">
-              Quote: {amountInEth} ETH → ~{quote} {toTokenSymbol || "TOKEN"}
+              Quote: {amountInEth} ETH → ~
+              {formattedQuote.toLocaleString(undefined, {
+                maximumFractionDigits: 6,
+              })}{" "}
+              {toTokenSymbol || "TOKEN"}
             </div>
           )}
 
