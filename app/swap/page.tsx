@@ -23,7 +23,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { parseEther, formatEther, isAddress } from "viem";
+import { parseEther, formatEther, isAddress, formatUnits } from "viem";
 
 type HexAddress = `0x${string}`;
 
@@ -228,8 +228,8 @@ export default function SwapPage() {
       });
 
       setTxs((prev) => [{ hash: hash as HexAddress }, ...prev]);
-    } catch (e: any) {
-      setError(e?.shortMessage || e?.message || "Swap error");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Swap error");
     }
   }
 
@@ -337,7 +337,7 @@ export default function SwapPage() {
               {toTokenBalance
                 ? (() => {
                     const dec = Number(toTokenDecimals || 18);
-                    const { formatUnits } = require("viem");
+
                     return `${Number(formatUnits(toTokenBalance as unknown as bigint, dec)).toFixed(6)}`;
                   })()
                 : "—"}
