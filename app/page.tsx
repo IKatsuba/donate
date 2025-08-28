@@ -1,6 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+import { sepolia } from "wagmi/chains";
+import {
+  useAccount,
+  useBalance,
+  useChainId,
+  useDisconnect,
+  useSwitchChain,
+  useWriteContract,
+  useReadContract,
+} from "wagmi";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -11,164 +21,345 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import {
-  useAccount,
-  useChainId,
-  useChains,
-  useSwitchChain,
-  useSendTransaction,
-  useConnect,
-  useDisconnect,
-} from "wagmi";
-import { parseEther, isAddress } from "viem";
-import { sepolia } from "wagmi/chains";
+import { cn } from "@/lib/utils";
+import { parseEther, formatEther, isAddress, formatUnits } from "viem";
+import { useAppKit } from "@reown/appkit/react";
 
-export default function DonatePage() {
+type HexAddress = `0x${string}`;
+
+const QUOTER_V2_ABI = [
+  {
+    type: "function",
+    name: "quoteExactInputSingle",
+    stateMutability: "nonpayable",
+    inputs: [
+      {
+        name: "params",
+        type: "tuple",
+        components: [
+          { name: "tokenIn", type: "address" },
+          { name: "tokenOut", type: "address" },
+          { name: "amountIn", type: "uint256" },
+          { name: "fee", type: "uint24" },
+          { name: "sqrtPriceLimitX96", type: "uint160" },
+        ],
+      },
+    ],
+    outputs: [
+      { name: "amountOut", type: "uint256" },
+      { name: "sqrtPriceX96After", type: "uint160" },
+      { name: "initializedTicksCrossed", type: "uint32" },
+      { name: "gasEstimate", type: "uint256" },
+    ],
+  },
+] as const;
+
+const SWAP_ROUTER_V3_ABI = [
+  {
+    type: "function",
+    name: "exactInputSingle",
+    stateMutability: "payable",
+    inputs: [
+      {
+        name: "params",
+        type: "tuple",
+        components: [
+          { name: "tokenIn", type: "address" },
+          { name: "tokenOut", type: "address" },
+          { name: "fee", type: "uint24" },
+          { name: "recipient", type: "address" },
+          { name: "amountIn", type: "uint256" },
+          { name: "amountOutMinimum", type: "uint256" },
+          { name: "sqrtPriceLimitX96", type: "uint160" },
+        ],
+      },
+    ],
+    outputs: [{ name: "amountOut", type: "uint256" }],
+  },
+] as const;
+
+const ERC20_ABI = [
+  {
+    type: "function",
+    name: "symbol",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "string" }],
+  },
+  {
+    type: "function",
+    name: "decimals",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "uint8" }],
+  },
+  {
+    type: "function",
+    name: "balanceOf",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+] as const;
+
+const SWAP_ROUTER_02: HexAddress = "0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E";
+const QUOTER_V2: HexAddress = "0xEd1f6473345F45b75F8179591dd5bA1888cf2FB3";
+
+const WETH9_SEPOLIA: HexAddress = "0xfff9976782d46cc05630d1f6ebab18b2324d6b14";
+
+function tryParseNumber(value: string): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+export default function SwapPage() {
   const { address, isConnected } = useAccount();
-  const { connect, connectors } = useConnect();
-  const { disconnect } = useDisconnect();
   const chainId = useChainId();
-  const chains = useChains();
+  const { open } = useAppKit();
+  const { disconnect } = useDisconnect();
   const { switchChain, isPending: isSwitching } = useSwitchChain();
-  const {
-    sendTransactionAsync,
-    data: txHash,
-    isPending: isSending,
-  } = useSendTransaction();
+  const { writeContractAsync, isPending: isWriting } = useWriteContract();
+  const { data: ethBalance } = useBalance({ address, chainId: sepolia.id });
 
-  const [amount, setAmount] = useState("0.01");
-  const [recipient, setRecipient] = useState(
-    "0xbb61FFEF3c1855D40c5868669ac0ECeB47E4eF56",
-  );
-  const [selectedChainId, setSelectedChainId] = useState<number>(sepolia.id);
+  const [toToken, setToToken] = useState<string>("");
+  const [fee, setFee] = useState<500 | 3000 | 10000>(3000);
+  const [amountInEth, setAmountInEth] = useState<string>("0.005");
   const [error, setError] = useState<string | null>(null);
+  const [txs, setTxs] = useState<{ hash: HexAddress }[]>([]);
 
-  useEffect(() => {
-    if (!chains?.length) return;
-    if (!chains.find((c) => c.id === selectedChainId)) {
-      setSelectedChainId(chains[0].id);
-    }
-  }, [chains, selectedChainId]);
+  const isOnSepolia = chainId === sepolia.id;
 
-  const isOnSelectedChain = useMemo(
-    () => chainId === selectedChainId,
-    [chainId, selectedChainId],
-  );
+  const toTokenAddress: HexAddress | null = useMemo(() => {
+    return isAddress(toToken) ? (toToken as HexAddress) : null;
+  }, [toToken]);
 
-  const txExplorerUrl = useMemo(() => {
-    if (!txHash) return null;
-    return `${sepolia.blockExplorers.default.url}/tx/${txHash}`;
-  }, [txHash]);
+  const { data: toTokenSymbol } = useReadContract({
+    abi: ERC20_ABI,
+    address: toTokenAddress || undefined,
+    functionName: "symbol",
+    chainId: sepolia.id,
+    query: { enabled: Boolean(toTokenAddress) },
+  });
 
-  async function handleSend() {
-    setError(null);
-    if (!isConnected) {
-      setError("Connect wallet");
-      return;
-    }
-    if (!recipient || !isAddress(recipient)) {
-      setError("Enter valid recipient address");
-      return;
-    }
+  const { data: toTokenDecimals } = useReadContract({
+    abi: ERC20_ABI,
+    address: toTokenAddress || undefined,
+    functionName: "decimals",
+    chainId: sepolia.id,
+    query: { enabled: Boolean(toTokenAddress) },
+  });
+
+  const { data: toTokenBalance } = useReadContract({
+    abi: ERC20_ABI,
+    address: toTokenAddress || undefined,
+    functionName: "balanceOf",
+    args: address ? [address] : undefined,
+    chainId: sepolia.id,
+    query: { enabled: Boolean(toTokenAddress && address) },
+  });
+
+  const {
+    data: quote,
+    isError: isQuoteError,
+    error: quoteError,
+  } = useReadContract({
+    abi: QUOTER_V2_ABI,
+    address: QUOTER_V2,
+    functionName: "quoteExactInputSingle",
+    args: [
+      {
+        tokenIn: WETH9_SEPOLIA,
+        tokenOut: toTokenAddress,
+        fee,
+        amountIn: parseEther(
+          String(tryParseNumber(amountInEth)) as `${number}`,
+        ),
+        sqrtPriceLimitX96: 0n,
+      },
+    ],
+    chainId: sepolia.id,
+    query: { enabled: Boolean(toTokenAddress && amountInEth) },
+  });
+
+  const formattedQuote = useMemo(() => {
     try {
-      if (!isOnSelectedChain) {
-        await switchChain({ chainId: selectedChainId });
+      if (!quote) return null;
+      const amountOutRaw = Array.isArray(quote)
+        ? (quote[0] as unknown as bigint)
+        : (quote as unknown as bigint);
+      const dec = Number(toTokenDecimals || 18);
+      const num = Number(formatUnits(amountOutRaw, dec));
+      if (!Number.isFinite(num)) return null;
+      return num;
+    } catch {
+      return null;
+    }
+  }, [quote, toTokenDecimals]);
+
+  const txExplorerBase = sepolia.blockExplorers.default.url;
+
+  async function ensureSepolia() {
+    if (!isOnSepolia) {
+      await switchChain({ chainId: sepolia.id });
+    }
+  }
+
+  async function handleSwap() {
+    try {
+      setError(null);
+      if (!isConnected) {
+        throw new Error("Connect wallet");
       }
-      const value = parseEther(amount as `${number}`);
-      await sendTransactionAsync({
-        chainId: selectedChainId,
-        to: recipient as `0x${string}`,
-        value,
+      if (!toTokenAddress) {
+        throw new Error("Enter a valid destination token address");
+      }
+
+      const amountNum = tryParseNumber(amountInEth);
+      if (amountNum === null || amountNum === 0) {
+        throw new Error("Enter amount");
+      }
+
+      await ensureSepolia();
+
+      const amountInWei = parseEther(String(amountNum) as `${number}`);
+
+      const hash = await writeContractAsync({
+        abi: SWAP_ROUTER_V3_ABI,
+        address: SWAP_ROUTER_02,
+        functionName: "exactInputSingle",
+        chainId: sepolia.id,
+        args: [
+          {
+            tokenIn: WETH9_SEPOLIA,
+            tokenOut: toTokenAddress,
+            fee,
+            recipient: address as HexAddress,
+            amountIn: amountInWei,
+            amountOutMinimum: 0n,
+            sqrtPriceLimitX96: 0n,
+          },
+        ],
+        value: amountInWei,
       });
+
+      setTxs((prev) => [{ hash: hash as HexAddress }, ...prev]);
     } catch (e: unknown) {
-      const message =
-        e && typeof e === "object" && "shortMessage" in e
-          ? (e as { shortMessage: string }).shortMessage
-          : e && typeof e === "object" && "message" in e
-            ? (e as { message: string }).message
-            : "Error sending";
-      console.log(e);
-      setError(message);
+      setError(e instanceof Error ? e.message : "Swap error");
     }
   }
 
   return (
-    <div className="mx-auto max-w-xl p-6">
+    <div className="mx-auto max-w-2xl p-6">
       <Card>
         <CardHeader>
-          <CardTitle>Donate</CardTitle>
+          <CardTitle>Swap (Sepolia)</CardTitle>
+
           <CardDescription>
-            Send test ETH to the specified address in the selected network.
+            Swap Sepolia ETH to a selected ERC-20 via Uniswap V3 (WETH → Token).
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent className="space-y-6">
           <div className="flex items-center gap-3">
             <div className="flex-1 text-sm">
               <div className="font-medium">
-                {isConnected ? "Connected:" : "Connect Wallet"}
+                {isConnected ? "Wallet" : "Connect wallet"}
               </div>
               <div className="text-muted-foreground break-all">
                 {address || ""}
               </div>
+              <div className="text-muted-foreground text-xs">
+                Network:{" "}
+                {isOnSepolia ? sepolia.name : `Not Sepolia (${chainId})`}
+              </div>
             </div>
             {isConnected ? (
               <Button variant="secondary" onClick={() => disconnect()}>
-                Disconnect Wallet
+                Disconnect
               </Button>
             ) : (
               <>
-                {connectors.map((connector) => (
-                  <Button
-                    key={connector.id}
-                    onClick={() =>
-                      connect({ connector, chainId: selectedChainId })
-                    }
-                  >
-                    {connector.icon && (
-                      <img
-                        src={connector.icon}
-                        alt={connector.name}
-                        className="w-4 h-4"
-                      />
-                    )}
-                    {connector.name}
-                  </Button>
-                ))}
+                <Button onClick={() => open()}>Connect Wallet</Button>
               </>
             )}
           </div>
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="space-y-2">
-              <Label htmlFor="network">Network</Label>
-              <div className="flex items-center gap-2">
-                <div className="text-sm text-muted-foreground">
-                  {sepolia.name}
-                </div>
+              <Label>Pay (ETH)</Label>
+              <Input
+                inputMode="decimal"
+                value={amountInEth}
+                onChange={(e) => setAmountInEth(e.target.value)}
+              />
+              <div className="text-xs text-muted-foreground">
+                Balance:{" "}
+                {ethBalance
+                  ? `${Number(formatEther(ethBalance.value)).toFixed(6)} ETH`
+                  : "—"}
               </div>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="amount">Amount (ETH)</Label>
+              <Label>Receive (token address)</Label>
               <Input
-                id="amount"
-                inputMode="decimal"
-                placeholder="0.01"
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
+                placeholder="0x... (e.g., USDC on Sepolia)"
+                value={toToken}
+                onChange={(e) => setToToken(e.target.value.trim())}
               />
+              <div className="text-xs text-muted-foreground">
+                {toTokenAddress
+                  ? `Token: ${toTokenSymbol || "?"}`
+                  : "Enter a valid ERC-20 address"}
+              </div>
             </div>
           </div>
 
-          <div className="space-y-2">
-            <Label htmlFor="recipient">Recipient address</Label>
-            <Input
-              id="recipient"
-              placeholder="0x... (your address)"
-              value={recipient}
-              readOnly
-              onChange={(e) => setRecipient(e.target.value.trim())}
-            />
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            <div className="space-y-2">
+              <Label>Pool fee (fee)</Label>
+              <select
+                className={cn(
+                  "h-9 w-full rounded-md border bg-background px-3 text-sm",
+                )}
+                value={fee}
+                onChange={(e) =>
+                  setFee(Number(e.target.value) as 500 | 3000 | 10000)
+                }
+              >
+                <option value={500}>0.05% (500)</option>
+                <option value={3000}>0.3% (3000)</option>
+                <option value={10000}>1% (10000)</option>
+              </select>
+            </div>
           </div>
+
+          {formattedQuote !== null && (
+            <div className="rounded-md border bg-muted/30 p-3 text-sm">
+              Quote: {amountInEth} ETH → ~
+              {formattedQuote.toLocaleString(undefined, {
+                maximumFractionDigits: 6,
+              })}{" "}
+              {toTokenSymbol || "TOKEN"}
+            </div>
+          )}
+
+          {toTokenAddress && (
+            <div className="text-xs text-muted-foreground">
+              Balance {toTokenSymbol || "TOKEN"}:{" "}
+              {toTokenBalance
+                ? (() => {
+                    const dec = Number(toTokenDecimals || 18);
+
+                    return `${Number(formatUnits(toTokenBalance as unknown as bigint, dec)).toFixed(6)}`;
+                  })()
+                : "—"}
+            </div>
+          )}
+
+          {isQuoteError && (
+            <div className="rounded-md border border-destructive bg-destructive/10 p-2 text-sm text-destructive">
+              {quoteError.shortMessage}
+            </div>
+          )}
 
           {error && (
             <div className="rounded-md border border-destructive bg-destructive/10 p-2 text-sm text-destructive">
@@ -176,27 +367,38 @@ export default function DonatePage() {
             </div>
           )}
 
-          {txHash && (
-            <div className="rounded-md border border-green-600/40 bg-green-600/10 p-2 text-sm break-all">
-              <div>Hash: {txHash}</div>
-              {txExplorerUrl && (
-                <a
-                  className="text-primary underline"
-                  href={txExplorerUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Open in explorer
-                </a>
-              )}
-            </div>
-          )}
-
           <div className="flex justify-end">
-            <Button onClick={handleSend} disabled={isSending || isSwitching}>
-              {isSending ? "Sending..." : "Send donation"}
+            <Button
+              onClick={handleSwap}
+              disabled={!toTokenAddress || isWriting || isSwitching}
+            >
+              {isWriting ? "Swapping..." : "Swap"}
             </Button>
           </div>
+
+          {txs.length > 0 && (
+            <div className="space-y-2">
+              <Label>Transactions</Label>
+              <div className="space-y-2 text-sm">
+                {txs.map((t, i) => (
+                  <div
+                    key={t.hash + String(i)}
+                    className="rounded-md border p-2 break-all"
+                  >
+                    <div>Hash: {t.hash}</div>
+                    <a
+                      className="text-primary underline"
+                      href={`${txExplorerBase}/tx/${t.hash}`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Open in explorer
+                    </a>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>
