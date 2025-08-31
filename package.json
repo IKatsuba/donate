@@ -6,7 +6,8 @@
     "dev": "next dev --turbopack --port 2999",
     "build": "next build --turbopack",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "fork:mainnet": "anvil --fork-url https://eth.merkle.io"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.1",
